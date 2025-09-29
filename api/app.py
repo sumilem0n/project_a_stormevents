@@ -1,168 +1,171 @@
-# api/app.py
-from __future__ import annotations
-
-import os
-import time
-import uuid
-import logging
-from datetime import date
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-import structlog
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
-from starlette_exporter import PrometheusMiddleware, handle_metrics
-
-
-# ----------------------------
-# Logging / Request tracing
-# ----------------------------
-def configure_logging() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.dict_tracebacks,
-            structlog.processors.JSONRenderer(),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-        cache_logger_on_first_use=True,
-    )
-
-
-class RequestIDMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        rid = request.headers.get("x-request-id") or uuid.uuid4().hex
-        structlog.contextvars.bind_contextvars(request_id=rid)
-        start = time.perf_counter()
-        try:
-            response: Response = await call_next(request)
-            return response
-        finally:
-            dur_ms = (time.perf_counter() - start) * 1000
-            structlog.get_logger().info(
-                "request",
-                method=request.method,
-                path=request.url.path,
-                status_code=getattr(response, "status_code", 0),
-                duration_ms=round(dur_ms, 2),
-            )
-            structlog.contextvars.clear_contextvars()
-
-
-# ----------------------------
-# FastAPI app + middleware
-# ----------------------------
-app = FastAPI(title="StormEvents API", version="0.4.0")
-
-# CORS: dev-open (tighten in prod)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-configure_logging()
-app.add_middleware(RequestIDMiddleware)
-
-# Prometheus metrics
-app.add_middleware(PrometheusMiddleware, app_name="stormevents_api", group_paths=True)
-app.add_route("/metrics", handle_metrics)
-
-
-# ----------------------------
-# Helpers
-# ----------------------------
-def _parse_bbox(bbox: str) -> Tuple[float, float, float, float]:
-    """Parse 'minx,miny,maxx,maxy' into floats."""
-    parts = bbox.split(",")
-    if len(parts) != 4:
-        raise HTTPException(
-            status_code=422, detail="bbox must be 'minx,miny,maxx,maxy'"
-        )
-    try:
-        mnx, mny, mxx, mxy = (float(p) for p in parts)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422, detail="bbox values must be numbers"
-        ) from exc
-    if mnx >= mxx or mny >= mxy:
-        raise HTTPException(status_code=422, detail="bbox must be min<max for x and y")
-    return mnx, mny, mxx, mxy
-
-
-def _to_feature_collection(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Convert rows with lon/lat to a GeoJSON FeatureCollection (placeholder)."""
-    features: List[Dict[str, Any]] = []
-    for r in rows:
-        geom = None
-        if "longitude" in r and "latitude" in r:
-            geom = {"type": "Point", "coordinates": [r["longitude"], r["latitude"]]}
-        props = {k: v for k, v in r.items() if k not in {"longitude", "latitude"}}
-        features.append({"type": "Feature", "geometry": geom, "properties": props})
-    return {"type": "FeatureCollection", "features": features}
-
-
-# ----------------------------
-# Routes
-# ----------------------------
-@app.get("/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.get("/events")
-def events(
-    start: date = Query(..., description="YYYY-MM-DD"),
-    end: date = Query(..., description="YYYY-MM-DD"),
-    bbox: Optional[str] = Query(None, description="minx,miny,maxx,maxy (lon,lat)"),
-    limit: int = Query(1000, ge=1, le=100_000),
-    types: Optional[List[str]] = Query(default=None, alias="types"),
-) -> Dict[str, Any]:
-    """Return GeoJSON features (stubbed for now)."""
-    if start > end:
-        raise HTTPException(status_code=422, detail="start must be <= end")
-    _bbox: Optional[Tuple[float, float, float, float]] = (
-        _parse_bbox(bbox) if bbox else None
-    )
-
-    # TODO: replace with Athena/DuckDB query using start/end/_bbox/limit/types
-    rows: List[Dict[str, Any]] = []
-    return _to_feature_collection(rows)
-
-
-@app.get("/events/summary")
-def events_summary(
-    start: date = Query(..., description="YYYY-MM-DD"),
-    end: date = Query(..., description="YYYY-MM-DD"),
-    groupby: str = Query("type", description="Group field (e.g., 'type' or 'state')"),
-    bbox: Optional[str] = Query(None),
-) -> Dict[str, Any]:
-    """Return aggregated counts (stub)."""
-    if start > end:
-        raise HTTPException(status_code=422, detail="start must be <= end")
-    _bbox: Optional[Tuple[float, float, float, float]] = (
-        _parse_bbox(bbox) if bbox else None
-    )
-
-    # TODO: replace with Athena/DuckDB aggregation
-    summary_rows: List[Dict[str, Any]] = []
-    return {"groupby": groupby, "rows": summary_rows}
-
-
-# ----------------------------
-# Static UI (guarded)
-# Put this LAST so API routes take precedence.
-# Skip in CI by setting DISABLE_STATIC=1.
-# ----------------------------
-STATIC_DIR: Path = (Path(__file__).parent / "static").resolve()
-if STATIC_DIR.is_dir() and os.getenv("DISABLE_STATIC", "0") != "1":
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+diff --git a/api/app.py b/api/app.py
+index 3b8a4b1..9f2d7ac 100644
+--- a/api/app.py
++++ b/api/app.py
+@@ -1,20 +1,28 @@
+ from __future__ import annotations
+ 
+ import os
+ import re
++import uuid
+ from datetime import date
+ from typing import List, Optional, Tuple, Literal
+ 
+-from fastapi import FastAPI, HTTPException, Query
++from fastapi import FastAPI, HTTPException, Query, Request, Response
+ from pydantic import BaseModel, Field
+ from starlette.responses import PlainTextResponse
+ from starlette_exporter import PrometheusMiddleware, handle_metrics
++from fastapi.middleware.cors import CORSMiddleware
+ 
+ 
+ # -------------------------
+ # Pydantic models (GeoJSON)
+ # -------------------------
+ 
+ class PointGeometry(BaseModel):
+     type: Literal["Point"] = "Point"
+     coordinates: Tuple[float, float]  # (lon, lat)
+@@
+ class SummaryResponse(BaseModel):
+     rows: List[SummaryRow]
+ 
+ 
+ # -------------------------
+ # App + metrics
+ # -------------------------
+ 
+ app = FastAPI(title="StormEvents API", version="0.1.0")
+-app.add_middleware(PrometheusMiddleware, app_name="stormevents-api")
++app.add_middleware(
++    CORSMiddleware,
++    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
++    allow_methods=["*"],
++    allow_headers=["*"],
++)
++app.add_middleware(PrometheusMiddleware, app_name="stormevents-api")
+ app.add_route("/metrics", handle_metrics)
+ 
+ 
+ # -------------------------
+ # Utilities
+ # -------------------------
+ 
+ def parse_bbox(bbox_str: str) -> Tuple[float, float, float, float]:
+@@
+     return (min_lon, min_lat, max_lon, max_lat)
+ 
+ 
+ def point_within_bbox(lon: float, lat: float, bbox: Tuple[float, float, float, float]) -> bool:
+     min_lon, min_lat, max_lon, max_lat = bbox
+     return (min_lon <= lon <= max_lon) and (min_lat <= lat <= max_lat)
+ 
+ 
+-def is_offline() -> bool:
+-    return os.getenv("ATHENA_OFFLINE", "").strip() == "1"
++def is_offline() -> bool:
++    """
++    Backward/forward compatible offline switch:
++      - OFFLINE_MODE=true/1/yes/y
++      - ATHENA_OFFLINE=1 (legacy)
++    Defaults to offline if neither is set (nice for 'green on clone').
++    """
++    v = os.getenv("OFFLINE_MODE")
++    if v is not None:
++        return v.strip().lower() in {"1", "true", "yes", "y"}
++    v = os.getenv("ATHENA_OFFLINE")
++    if v is not None:
++        return v.strip() in {"1", "true", "yes", "y"}
++    return True
+ 
+ 
+ # -------------------------
+ # Mock data (offline mode)
+ # -------------------------
+ 
+@@
+ # -------------------------
+ # Routes
+ # -------------------------
+ 
+ @app.get("/health", response_class=PlainTextResponse, summary="Health")
+ def health() -> str:
+     return "ok"
+ 
+ 
+ @app.get(
+     "/events",
+     response_model=EventsResponse,
+     summary="Get StormEvents as GeoJSON",
+ )
+ def get_events(
++    request: Request,
++    response: Response,
+     start: date = Query(..., description="Start date (YYYY-MM-DD)"),
+     end: date = Query(..., description="End date (YYYY-MM-DD)"),
+     types: Optional[List[str]] = Query(None, description="Comma-separated list of event types", alias="types"),
+     bbox: Optional[str] = Query(None, description="minLon,minLat,maxLon,maxLat"),
+     limit: int = Query(10, ge=1, le=1000),
+ ):
+     # Support ?types=Tornado,Hail as well as repeated ?types=...
+     if types and len(types) == 1 and "," in types[0]:
+         types = [t.strip() for t in types[0].split(",") if t.strip()]
+ 
+     bbox_tuple: Optional[Tuple[float, float, float, float]] = None
+     if bbox:
+         bbox_tuple = parse_bbox(bbox)
+ 
++    # Basic temporal validation
++    if start > end:
++        raise HTTPException(status_code=400, detail="start must be <= end")
++
++    # Request ID: accept inbound X-Request-Id, else generate; echo in response
++    req_id = request.headers.get("x-request-id") or str(uuid.uuid4())
++    response.headers["X-Request-Id"] = req_id
++
+     try:
+         if is_offline():
+             features = query_events_offline(start, end, types, bbox_tuple, limit)
+         else:
+             # TODO: wire real data source
+             features = query_events_offline(start, end, types, bbox_tuple, limit)
+         return EventsResponse(features=features)
+     except HTTPException:
+         raise
+     except Exception as exc:
+         raise HTTPException(status_code=500, detail=f"Internal error querying events: {type(exc).__name__}") from exc
+ 
+ 
+ @app.get(
+     "/events/summary",
+     response_model=SummaryResponse,
+     summary="Summarize events",
+ )
+ def get_summary(
++    request: Request,
++    response: Response,
+     start: date = Query(...),
+     end: date = Query(...),
+     bbox: Optional[str] = Query(None),
+ ):
+     bbox_tuple: Optional[Tuple[float, float, float, float]] = None
+     if bbox:
+         bbox_tuple = parse_bbox(bbox)
+ 
++    if start > end:
++        raise HTTPException(status_code=400, detail="start must be <= end")
++
++    req_id = request.headers.get("x-request-id") or str(uuid.uuid4())
++    response.headers["X-Request-Id"] = req_id
++
+     try:
+         if is_offline():
+             rows = summarize_offline(start, end, bbox_tuple)
+         else:
+             # TODO: wire real aggregation
+             rows = summarize_offline(start, end, bbox_tuple)
+         return SummaryResponse(rows=rows)
+     except HTTPException:
+         raise
+     except Exception as exc:
+         raise HTTPException(status_code=500, detail=f"Internal error summarizing events: {type(exc).__name__}") from exc
