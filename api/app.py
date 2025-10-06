@@ -16,13 +16,16 @@ from starlette_exporter import PrometheusMiddleware, handle_metrics
 # Pydantic models (GeoJSON for OFFLINE/dev path)
 # ============================================================
 
+
 class PointGeometry(BaseModel):
     type: Literal["Point"] = "Point"
     coordinates: Tuple[float, float]
 
+
 class EventProperties(BaseModel):
     event_id: str
     event_type: str
+
 
 class EventFeature(BaseModel):
     id: str
@@ -30,16 +33,20 @@ class EventFeature(BaseModel):
     geometry: PointGeometry
     properties: EventProperties
 
+
 class EventsResponse(BaseModel):
     type: Literal["FeatureCollection"] = "FeatureCollection"
     features: List[EventFeature]
+
 
 class SummaryRow(BaseModel):
     key: str
     count: int
 
+
 class SummaryResponse(BaseModel):
     rows: List[SummaryRow]
+
 
 # ============================================================
 # Metrics
@@ -74,6 +81,7 @@ app.add_route("/metrics", handle_metrics)
 # Small utilities
 # ============================================================
 
+
 def _parse_types_param(types: Optional[List[str]] | None) -> Optional[List[str]]:
     """Accept both repeated keys and comma-separated lists; None if empty."""
     if not types:
@@ -86,28 +94,39 @@ def _parse_types_param(types: Optional[List[str]] | None) -> Optional[List[str]]
         out.extend(parts)
     return out or None
 
+
 def _parse_bbox(bbox: Optional[str]) -> Optional[Tuple[float, float, float, float]]:
     """Parse 'min_lon,min_lat,max_lon,max_lat' with validation."""
     if bbox is None:
         return None
     parts = bbox.split(",")
     if len(parts) != 4:
-        raise HTTPException(status_code=400, detail="bbox must have 4 comma-separated numbers")
+        raise HTTPException(
+            status_code=400, detail="bbox must have 4 comma-separated numbers"
+        )
     try:
         min_lon, min_lat, max_lon, max_lat = tuple(float(p) for p in parts)
     except ValueError:
         raise HTTPException(status_code=400, detail="bbox values must be numeric")
     if not (-180.0 <= min_lon <= 180.0 and -180.0 <= max_lon <= 180.0):
-        raise HTTPException(status_code=400, detail="bbox longitudes must be in [-180, 180]")
+        raise HTTPException(
+            status_code=400, detail="bbox longitudes must be in [-180, 180]"
+        )
     if not (-90.0 <= min_lat <= 90.0 and -90.0 <= max_lat <= 90.0):
-        raise HTTPException(status_code=400, detail="bbox latitudes must be in [-90, 90]")
+        raise HTTPException(
+            status_code=400, detail="bbox latitudes must be in [-90, 90]"
+        )
     if min_lon >= max_lon or min_lat >= max_lat:
         raise HTTPException(status_code=400, detail="bbox mins must be < maxs")
     return (min_lon, min_lat, max_lon, max_lat)
 
-def point_within_bbox(lon: float, lat: float, bbox: Tuple[float, float, float, float]) -> bool:
+
+def point_within_bbox(
+    lon: float, lat: float, bbox: Tuple[float, float, float, float]
+) -> bool:
     min_lon, min_lat, max_lon, max_lat = bbox
     return (min_lon <= lon <= max_lon) and (min_lat <= lat <= max_lat)
+
 
 def _explicit_offline() -> bool:
     """Only go offline if *explicitly* requested via env."""
@@ -119,25 +138,31 @@ def _explicit_offline() -> bool:
         return v.strip().lower() in {"1", "true", "yes", "y"}
     return False
 
+
 def _request_id(request: Request) -> str:
     rid = request.headers.get("X-Request-Id")
     if rid:
         return rid
     import random
+
     return f"req-{random.randint(100000, 999999)}"
+
 
 def _validate_dates(start: date, end: date) -> None:
     if start > end:
         # Tests look for this exact string:
         raise HTTPException(status_code=400, detail="start must be <= end")
 
+
 # ============================================================
 # Athena helpers (tests monkeypatch _boto3_client_with_req_id)
 # ============================================================
 
+
 def _boto3_client_with_req_id(service: str, request: Optional[Request] = None):
     region = os.getenv("AWS_REGION", "us-east-2")
     return boto3.client(service, region_name=region)
+
 
 def _athena_query_events(
     request: Request,
@@ -228,6 +253,7 @@ _SAMPLE_EVENTS: List[EventFeature] = [
     ),
 ]
 
+
 def _filter_by_types(
     features: Iterable[EventFeature], types: Optional[List[str]]
 ) -> List[EventFeature]:
@@ -235,6 +261,7 @@ def _filter_by_types(
         return list(features)
     allowed = {t.lower() for t in types}
     return [f for f in features if f.properties.event_type.lower() in allowed]
+
 
 def _filter_by_bbox(
     features: Iterable[EventFeature], bbox: Optional[Tuple[float, float, float, float]]
@@ -248,6 +275,7 @@ def _filter_by_bbox(
             out.append(f)
     return out
 
+
 def query_events_offline(
     start: date,
     end: date,
@@ -258,6 +286,7 @@ def query_events_offline(
     feats = _filter_by_types(_SAMPLE_EVENTS, types)
     feats = _filter_by_bbox(feats, bbox)
     return feats[: max(0, limit)]
+
 
 def summarize_offline(
     start: date,
@@ -270,13 +299,16 @@ def summarize_offline(
         counts[f.properties.event_type] = counts.get(f.properties.event_type, 0) + 1
     return [SummaryRow(key=k, count=v) for k, v in counts.items()]
 
+
 # ============================================================
 # Endpoints
 # ============================================================
 
+
 @app.get("/health", response_class=PlainTextResponse)
 def health() -> str:
     return "ok"
+
 
 @app.get("/events")
 def get_events(
@@ -301,7 +333,9 @@ def get_events(
 
         # 2) Otherwise try Athena; if it succeeds and pytest is running, return RAW
         try:
-            items = _athena_query_events(request, start, end, types_list, bbox_tuple, limit)
+            items = _athena_query_events(
+                request, start, end, types_list, bbox_tuple, limit
+            )
             if os.getenv("PYTEST_CURRENT_TEST"):
                 return items  # stubbed tests expect raw lists
             # wrap to GeoJSON for normal (non-pytest) runs
@@ -325,7 +359,10 @@ def get_events(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Internal error: {type(exc).__name__}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Internal error: {type(exc).__name__}"
+        ) from exc
+
 
 @app.get("/events/summary")
 def get_summary(
@@ -359,4 +396,6 @@ def get_summary(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Internal error: {type(exc).__name__}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Internal error: {type(exc).__name__}"
+        ) from exc
