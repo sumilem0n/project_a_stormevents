@@ -14,3 +14,22 @@ __pycache__/
 # docker leftovers
 *.pid
 
+# venv & caches
+.venv/
+__pycache__/
+*.pyc
+
+# coverage & reports
+.coverage
+coverage.xml
+
+# local env / logs
+.env
+*.log
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+
+# any leftover local AWS creds dir if it reappears
+AWS _accesskey/
