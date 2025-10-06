@@ -1,54 +1,39 @@
 ﻿name: CI
 on:
   push:
-    branches: [main]
-  workflow_dispatch: {}
-
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: requirements.txt
-
-      - name: Install deps (runtime + dev)
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      - name: Install deps
         run: |
-          python -m pip install -U pip
-          python -m pip install -r requirements.txt
-          # Belt-and-suspenders: make sure these are present even if reqs drift
-          python -m pip install fastapi uvicorn
-          python -m pip install ruff black mypy pytest pytest-cov httpx
-
-      - name: Show requirements & verify imports
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint
         run: |
-          echo "=== requirements.txt ==="
-          cat requirements.txt || true
-          python - <<'PY'
-          import importlib.util as I, sys
-          pkgs = ["fastapi","uvicorn","structlog","starlette_exporter"]
-          missing = [p for p in pkgs if I.find_spec(p) is None]
-          print("Python:", sys.version)
-          print("Missing:", missing)
-          assert not missing, f"Missing: {missing}"
-          PY
-
-      - name: Lint & Format
-        run: |
-          python -m ruff check . --fix
-          python -m black --check .
-
+          ruff check .
+          black --check .
       - name: Type check
-        run: python -m mypy api --ignore-missing-imports
-
+        run: |
+          mypy api
       - name: Tests
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-          DISABLE_STATIC: "1"
-        run: python -m pytest -q --maxfail=1
+        run: |
+          pytest -q --cov=api --cov-report=term-missing --cov-report=xml --cov-fail-under=50
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
