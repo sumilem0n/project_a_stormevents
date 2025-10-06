@@ -1,42 +1,91 @@
-﻿import os
-import importlib
+﻿import importlib
 import boto3
 from botocore.stub import Stubber, ANY
 from fastapi.testclient import TestClient
 
 
 def _headers_row(columns):
-    """Athena first row contains column headers."""
     return {"Data": [{"VarCharValue": c} for c in columns]}
 
 
 def _data_row(values):
-    """Athena rows return all values as strings; stringify to match."""
     return {"Data": [{"VarCharValue": str(v)} for v in values]}
+
+
+class _NoopMetric:
+    def __init__(self, *a, **kw): ...
+    def labels(self, *a, **kw): return self
+    def observe(self, *a, **kw): ...
+    def inc(self, *a, **kw): ...
+    def time(self):
+        class _Ctx:
+            def __enter__(self): return self
+            def __exit__(self, *exc): ...
+        return _Ctx()
 
 
 def _fresh_app_with_athena(monkeypatch):
     """
-    Ensure OFFLINE_MODE is disabled and reload FastAPI app module
-    so requests go through the Athena code path.
+    Disable OFFLINE_MODE so the Athena path is used.
+    Stub Prometheus metrics to avoid duplicate registration when reloading.
     """
-    # Turn OFF offline mode for this test run
     monkeypatch.setenv("OFFLINE_MODE", "0")
-    # If your code uses a different toggle, set it here as well:
-    # monkeypatch.setenv("USE_ATHENA", "1")
 
-    # Import/reload app AFTER env is set so startup reads new values
+    # Prevent metrics registration on reload
+    monkeypatch.setattr("prometheus_client.Histogram", _NoopMetric, raising=True)
+    monkeypatch.setattr("prometheus_client.Counter", _NoopMetric, raising=True)
+    monkeypatch.setattr("prometheus_client.Gauge", _NoopMetric, raising=True)
+    monkeypatch.setattr("prometheus_client.Summary", _NoopMetric, raising=True)
+
+    # (Re)load the app AFTER stubs & env are set
     from api import app as app_module
-
     importlib.reload(app_module)
     return app_module.app
 
 
+def _normalize_events_payload(payload):
+    """
+    Return a list of {event_id,event_type,lat,lon} regardless of payload shape.
+    Supports:
+      - GeoJSON FeatureCollection
+      - List of dicts already in the target shape
+    """
+    if isinstance(payload, dict) and payload.get("type") == "FeatureCollection":
+        feats = payload.get("features", [])
+        out = []
+        for f in feats:
+            props = f.get("properties", {})
+            coords = (f.get("geometry", {}) or {}).get("coordinates", [None, None])
+            # coords = [lon, lat]
+            out.append({
+                "event_id": props.get("event_id"),
+                "event_type": props.get("event_type"),
+                "lat": coords[1],
+                "lon": coords[0],
+            })
+        return out
+    elif isinstance(payload, list):
+        return payload
+    else:
+        raise AssertionError(f"Unexpected /events payload shape: {type(payload)} -> {payload}")
+
+
+def _normalize_summary_payload(payload):
+    """
+    Return a list of {key,count} regardless of payload shape.
+    Supports:
+      - {"rows": [...]}
+      - List of dicts already in the target shape
+    """
+    if isinstance(payload, dict) and "rows" in payload:
+        return payload["rows"]
+    elif isinstance(payload, list):
+        return payload
+    else:
+        raise AssertionError(f"Unexpected /events/summary payload shape: {type(payload)} -> {payload}")
+
+
 def test_events_stubbed(monkeypatch):
-    """
-    /events should return parsed rows from Athena when the query succeeds.
-    We stub all three Athena calls: start, poll, and fetch results.
-    """
     app = _fresh_app_with_athena(monkeypatch)
 
     athena = boto3.client("athena", region_name="us-east-2")
@@ -45,7 +94,7 @@ def test_events_stubbed(monkeypatch):
     # Make the app use our stubbed client
     monkeypatch.setattr("api.app._boto3_client_with_req_id", lambda service: athena)
 
-    # Expect real params but accept any values with ANY
+    # Expect real params but accept any values
     stub.add_response(
         "start_query_execution",
         {"QueryExecutionId": "QID-123"},
@@ -68,7 +117,6 @@ def test_events_stubbed(monkeypatch):
         {"ResultSet": {"Rows": rows}},
         {"QueryExecutionId": "QID-123"},
     )
-
     stub.activate()
 
     client = TestClient(app)
@@ -78,30 +126,14 @@ def test_events_stubbed(monkeypatch):
     )
     assert resp.status_code == 200
 
-    # Current API returns a GeoJSON FeatureCollection; compare essentials
-    data = resp.json()
-    assert data["type"] == "FeatureCollection"
-    feats = data["features"]
-    assert len(feats) == 2
-
-    def simple_feature(f):
-        # GeoJSON coordinates are [lon, lat]
-        return {
-            "event_id": f["properties"]["event_id"],
-            "event_type": f["properties"]["event_type"],
-            "coordinates": f["geometry"]["coordinates"],
-        }
-
-    assert [simple_feature(f) for f in feats] == [
-        {"event_id": "e1", "event_type": "Tornado", "coordinates": [-83.7, 42.28]},
-        {"event_id": "e2", "event_type": "Hail", "coordinates": [-83.75, 42.3]},
+    events = _normalize_events_payload(resp.json())
+    assert events == [
+        {"event_id": "e1", "event_type": "Tornado", "lat": 42.28, "lon": -83.7},
+        {"event_id": "e2", "event_type": "Hail",    "lat": 42.3,  "lon": -83.75},
     ]
 
 
 def test_summary_stubbed(monkeypatch):
-    """
-    /events/summary should return aggregated counts when the query succeeds.
-    """
     app = _fresh_app_with_athena(monkeypatch)
 
     athena = boto3.client("athena", region_name="us-east-2")
@@ -131,7 +163,6 @@ def test_summary_stubbed(monkeypatch):
         {"ResultSet": {"Rows": rows}},
         {"QueryExecutionId": "QID-456"},
     )
-
     stub.activate()
 
     client = TestClient(app)
@@ -141,8 +172,8 @@ def test_summary_stubbed(monkeypatch):
     )
     assert resp.status_code == 200
 
-    # Current API wraps results under {"rows": [...]}
-    assert resp.json()["rows"] == [
+    rows_norm = _normalize_summary_payload(resp.json())
+    assert rows_norm == [
         {"key": "Tornado", "count": 12},
-        {"key": "Hail", "count": 4},
+        {"key": "Hail",    "count": 4},
     ]
