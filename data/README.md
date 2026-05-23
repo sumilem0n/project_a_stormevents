@@ -1,8 +1,8 @@
-﻿# Data folder
+# Data folder
 
-Parquet lives here and is **not** committed.
-Generate with:
+Large generated data files are not committed to this repository.
 
-    python etl/noaa_etl.py
+Parquet files can be generated with:
 
-Outputs to: `data/parquet/stormevents/*.parquet`
+```bash
+python etl/noaa_etl.py
