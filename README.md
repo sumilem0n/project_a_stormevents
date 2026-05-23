@@ -2,18 +2,21 @@
 
 A containerized FastAPI application for exploring NOAA StormEvents data through API endpoints and a lightweight web map interface.
 
-This project demonstrates a cloud-oriented geospatial data workflow using Python, Docker, FastAPI, AWS Athena, Glue Data Catalog, and S3-style query outputs.
+This project demonstrates a cloud-oriented geospatial API structure using Python, Docker, FastAPI, AWS Athena, Glue Data Catalog, and S3-style query configuration.
 
 ## Features
 
-- FastAPI backend for querying storm event records
-- Date, bounding box, event type, and limit-based filtering
-- Summary endpoint for grouping events by fields such as event type
+- FastAPI backend with storm event API route scaffolding
+- Date, bounding box, event type, and limit-based request parameters
+- GeoJSON-style response structure for event features
+- Summary endpoint for grouped event counts
+- Prometheus `/metrics` endpoint for observability
+- JSON request logging with request IDs
 - Lightweight MapLibre web UI for visualizing events on a map
 - Docker Compose setup for local development
 - AWS Athena / Glue / S3 configuration through environment variables
 - Example IAM policy for least-privilege-style access
-- Basic API tests
+- Basic API tests and CI workflow
 - Architecture and setup documentation
 
 ## Project structure
@@ -39,8 +42,15 @@ This project demonstrates a cloud-oriented geospatial data workflow using Python
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | Check whether the API is running |
-| `GET /events?start=YYYY-MM-DD&end=YYYY-MM-DD&bbox=minLon,minLat,maxLon,maxLat&limit=100` | Query storm events with date, bounding box, and limit filters |
-| `GET /events/summary?groupby=type` | Return grouped summary results, such as counts by event type |
+| `GET /events?start=YYYY-MM-DD&end=YYYY-MM-DD&bbox=minLon,minLat,maxLon,maxLat&limit=100&types=Flood` | Return storm event features using date, bounding box, event type, and limit parameters |
+| `GET /events/summary?start=YYYY-MM-DD&end=YYYY-MM-DD&groupby=type` | Return grouped summary results, such as counts by event type |
+| `GET /metrics` | Expose Prometheus metrics for monitoring |
+
+## Current implementation status
+
+The API routes, request validation, GeoJSON-style response structure, logging, request IDs, and metrics middleware are implemented.
+
+The data query layer is currently scaffolded. The `/events` and `/events/summary` endpoints validate request parameters and return structured empty responses until the Athena or DuckDB query logic is connected.
 
 ## Quickstart
 
@@ -54,6 +64,12 @@ Open the API docs:
 
 ```text
 http://localhost:8000/docs
+```
+
+Open the metrics endpoint:
+
+```text
+http://localhost:8000/metrics
 ```
 
 Open the web map:
@@ -137,4 +153,4 @@ api/requirements.txt
 
 ## What I learned
 
-Through this project, I practiced connecting backend API design, cloud data querying, Docker-based development, IAM/security awareness, and geospatial visualization into a maintainable application workflow.
+Through this project, I practiced connecting backend API design, Docker-based development, cloud data-query architecture, IAM/security awareness, request validation, observability, and geospatial API design into a maintainable application workflow.
